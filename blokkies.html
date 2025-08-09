@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Blokkies — Casual Puzzle Game</title>
+  <style>
+    :root{
+      --cell-size: 36px;
+      --cols: 10;
+      --rows: 10;
+      --gap: 4px;
+      --board-width: calc(var(--cell-size) * var(--cols) + var(--gap) * (var(--cols) - 1));
+    }
+    html,body{height:100%;margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;color:#111;background:linear-gradient(180deg,#eef2ff,#ffffff);}
+    .app{max-width:1100px;margin:24px auto;padding:18px;display:grid;grid-template-columns:1fr 340px;gap:18px;align-items:start}
+    header{grid-column:1/-1;display:flex;justify-content:space-between;align-items:center}
+    h1{margin:0;font-size:20px}
+    .board-wrap{background:rgba(255,255,255,0.8);padding:18px;border-radius:12px;box-shadow:0 6px 20px rgba(50,50,93,0.08)}
+    .board{width:var(--board-width);display:grid;grid-template-columns:repeat(var(--cols),var(--cell-size));grid-template-rows:repeat(var(--rows),var(--cell-size));gap:var(--gap);}
+    .cell{width:var(--cell-size);height:var(--cell-size);background:linear-gradient(180deg,#fff,#f3f4f6);border-radius:6px;box-shadow:inset 0 -1px 0 rgba(0,0,0,0.03);display:flex;align-items:center;justify-content:center}
+    .cell.occupied{background:transparent}
+    .panel{background:rgba(255,255,255,0.9);padding:14px;border-radius:12px;box-shadow:0 6px 20px rgba(50,50,93,0.06)}
+    .controls{display:flex;gap:8px;margin-bottom:8px}
+    button{padding:8px 12px;border-radius:8px;border:0;background:#6366f1;color:white;font-weight:600;cursor:pointer}
+    button.ghost{background:#eef2ff;color:#374151}
+    .pieces{display:flex;flex-direction:column;gap:12px}
+    .piece-slot{background:linear-gradient(180deg,#fbfdff,#f5f7ff);padding:10px;border-radius:8px;display:flex;align-items:center;justify-content:center;min-height:70px}
+    .piece{display:grid;grid-auto-flow:row;gap:4px;touch-action:none}
+    .block{width:24px;height:24px;border-radius:4px;box-shadow:0 4px 10px rgba(2,6,23,0.12);display:inline-block}
+    .hud{display:flex;flex-direction:column;gap:8px}
+    .score{font-size:16px;font-weight:700}
+    .small{font-size:13px;color:#4b5563}
+    .breaking{animation:break-pop 300ms ease-out forwards}
+    @keyframes break-pop{0%{transform:scale(1);opacity:1}100%{transform:scale(0.1) rotate(18deg);opacity:0}}
+    .shadowed{filter:drop-shadow(0 6px 18px rgba(99,102,241,0.15))}
+    footer{grid-column:1/-1;text-align:center;color:#6b7280;font-size:12px;margin-top:8px}
+    @media (max-width:900px){.app{grid-template-columns:1fr;}.board{margin:0 auto}}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>Blokkies — place, match, score!</h1>
+      <div style="text-align:right">
+        <div class="small">Drag & drop pieces into the grid • Streaks & bonus points • Tracks high score</div>
+      </div>
+    </header>
+
+    <div class="board-wrap">
+      <div id="board" class="board" aria-label="Game board"></div>
+    </div>
+
+    <aside class="panel">
+      <div class="hud">
+        <div class="score">Score: <span id="score">0</span></div>
+        <div class="small">High score: <strong id="highscore">0</strong></div>
+        <div class="small">Current streak: <span id="streak">0</span> (consecutive clears)</div>
+        <div class="controls">
+          <button id="newGame">New Game</button>
+          <button id="undo" class="ghost">Undo</button>
+        </div>
+        <div style="margin-top:6px"><strong>Available pieces</strong></div>
+        <div class="pieces" id="slots"></div>
+        <div class="small" style="margin-top:8px">Tip: Fill rows or columns to clear them. Clearing multiple rows in a turn increases your streak and gives bonus points.</div>
+      </div>
+    </aside>
+
+    <footer>Made with HTML/JS • Local high score stored in your browser</footer>
+  </div>
+
+  <script>
+  // == Blokkies v1.0 - Single-file game ==
+  // Features implemented:
+  // - 10x10 grid
+  // - draggable pieces of various shapes
+  // - drop placement checks and collision
+  // - row/column clears with streaks and bonus points
+  // - sound effects via WebAudio
+  // - breaking animation
+  // - highscore stored in localStorage
+
+  (function(){
+    const COLS = 10, ROWS = 10;
+    const boardEl = document.getElementById('board');
+    const slotsEl = document.getElementById('slots');
+    const scoreEl = document.getElementById('score');
+    const highEl = document.getElementById('highscore');
+    const streakEl = document.getElementById('streak');
+    const newBtn = document.getElementById('newGame');
+    const undoBtn = document.getElementById('undo');
+
+    // game state
+    let grid = []; // ROWS x COLS, 0 = empty or color string
+    let pieces = []; // pieces in slots
+    let score = 0;
+    let streak = 0;
+    let highscore = parseInt(localStorage.getItem('blokkies_highscore')||'0',10) || 0;
+    let history = [];
+
+    highEl.textContent = highscore;
+
+    // Create board cells
+    function makeGrid(){
+      boardEl.innerHTML = '';
+      grid = new Array(ROWS).fill(null).map(()=>new Array(COLS).fill(0));
+      for(let r=0;r<ROWS;r++){
+        for(let c=0;c<COLS;c++){
+          const cell = document.createElement('div');
+          cell.className = 'cell';
+          cell.dataset.r = r; cell.dataset.c = c;
+          cell.addEventListener('dragover',ev=>ev.preventDefault());
+          cell.addEventListener('drop',onDrop);
+          boardEl.appendChild(cell);
+        }
+      }
+    }
+
+    // Predefined shapes (arrays of [r,c] relative coords). 1x1 up to 3x3 shapes
+    const SHAPES = [
+      {name:'single', coords:[[0,0]]},
+      {name:'domino', coords:[[0,0],[0,1]]},
+      {name:'square2', coords:[[0,0],[0,1],[1,0],[1,1]]},
+      {name:'l3', coords:[[0,0],[1,0],[2,0]]},
+      {name:'l2', coords:[[0,0],[1,0],[1,1]]},
+      {name:'t', coords:[[0,1],[1,0],[1,1],[1,2]]},
+      {name:'zig', coords:[[0,0],[0,1],[1,1]]},
+      {name:'threeRow', coords:[[0,0],[0,1],[0,2]]}
+    ];
+
+    const COLORS = ['#ef4444','#f59e0b','#10b981','#06b6d4','#6366f1','#ec4899'];
+
+    function randomShape(){
+      const base = SHAPES[Math.floor(Math.random()*SHAPES.length)];
+      return {coords: base.coords.map(a=>[a[0],a[1]]), color: COLORS[Math.floor(Math.random()*COLORS.length)]};
+    }
+
+    function newPieces(){
+      pieces = [randomShape(), randomShape(), randomShape()];
+      renderPieces();
+    }
+
+    function renderPieces(){
+      slotsEl.innerHTML = '';
+      pieces.forEach((p,idx)=>{
+        const slot = document.createElement('div'); slot.className='piece-slot'; slot.dataset.index=idx;
+        const pEl = makePieceElement(p,idx);
+        slot.appendChild(pEl);
+        slotsEl.appendChild(slot);
+      });
+    }
+
+    function makePieceElement(piece,idx){
+      // determine grid size to render piece compactly
+      const maxR = Math.max(...piece.coords.map(c=>c[0]));
+      const maxC = Math.max(...piece.coords.map(c=>c[1]));
+      const wrap = document.createElement('div');
+      wrap.className='piece shadowed';
+      wrap.style.gridTemplateColumns = `repeat(${maxC+1},24px)`;
+      wrap.draggable = true;
+      wrap.addEventListener('dragstart',e=>onDragStart(e,piece,idx));
+      wrap.addEventListener('touchstart',e=>onTouchStart(e,piece,idx),{passive:false});
+
+      // render cells
+      const cells = (maxR+1)*(maxC+1);
+      for(let r=0;r<=maxR;r++){
+        for(let c=0;c<=maxC;c++){
+          const b = document.createElement('div');
+          b.style.width='24px'; b.style.height='24px'; b.style.borderRadius='4px';
+          const found = piece.coords.find(cc=>cc[0]===r && cc[1]===c);
+          if(found){
+            b.className='block'; b.style.background=piece.color;
+          }
+          wrap.appendChild(b);
+        }
+      }
+      return wrap;
+    }
+
+    // Drag handlers
+    function onDragStart(e,piece,idx){
+      e.dataTransfer.setData('application/json', JSON.stringify({piece,idx}));
+      // small visual hint
+      const crt = makePieceElement(piece,idx);
+      crt.style.transform = 'scale(1.2)';
+      document.body.appendChild(crt);
+      e.dataTransfer.setDragImage(crt, 15, 15);
+      setTimeout(()=>crt.remove(),50);
+      playPlaceSound();
+    }
+
+    // Basic touch to mouse conversion for mobile drag
+    function onTouchStart(e,piece,idx){
+      e.preventDefault();
+      // open simple placement mode: choose target cell then place
+      const cells = Array.from(document.querySelectorAll('.cell'));
+      const onTap = (ev)=>{
+        const target = ev.target.closest('.cell');
+        if(target){
+          const r = parseInt(target.dataset.r,10), c = parseInt(target.dataset.c,10);
+          attemptPlace(piece, idx, r, c);
+        }
+        cells.forEach(cell=>cell.removeEventListener('click',onTap));
+      };
+      cells.forEach(cell=>cell.addEventListener('click',onTap));
+    }
+
+    function onDrop(e){
+      e.preventDefault();
+      let data = null;
+      try{ data = JSON.parse(e.dataTransfer.getData('application/json')); }catch(err){return}
+      const target = e.target.closest('.cell');
+      if(!data || !target) return;
+      const r = parseInt(target.dataset.r,10), c = parseInt(target.dataset.c,10);
+      attemptPlace(data.piece, data.idx, r, c);
+    }
+
+    // Attempt placement: piece has relative coords; r,c is the board cell corresponding to relative (0,0)
+    function attemptPlace(piece, idx, r, c){
+      if(!canPlace(piece, r, c)){
+        playDeniedSound();
+        // small shake effect
+        const cell = document.querySelector(`[data-r='${r}'][data-c='${c}']`);
+        if(cell) cell.animate([{transform:'translateY(-3px)'},{transform:'translateY(0)'}],{duration:180,iterations:1});
+        return false;
+      }
+      // save history
+      history.push({grid:grid.map(row=>row.slice()), pieces:pieces.map(p=>JSON.parse(JSON.stringify(p))), score, streak});
+      place(piece, r, c);
+      pieces.splice(idx,1);
+      // refill slot if empty
+      if(pieces.length===0) newPieces();
+      else while(pieces.length<3) pieces.push(randomShape());
+      renderPieces();
+      // after placing, check clears
+      const cleared = clearLines();
+      if(cleared>0){
+        streak += 1;
+        const points = calculatePoints(cleared, streak);
+        score += points;
+        playBreakSound(cleared);
+        animateClears();
+      } else {
+        streak = 0;
+      }
+      updateScore();
+      checkGameOver();
+      return true;
+    }
+
+    function canPlace(piece, r, c){
+      for(const [rr,cc] of piece.coords){
+        const R = r + rr, C = c + cc;
+        if(R<0 || R>=ROWS || C<0 || C>=COLS) return false;
+        if(grid[R][C]) return false;
+      }
+      return true;
+    }
+
+    function place(piece, r, c){
+      for(const [rr,cc] of piece.coords){
+        const R = r + rr, C = c + cc;
+        grid[R][C] = piece.color;
+      }
+      renderGrid();
+      playPlaceSound();
+    }
+
+    function renderGrid(){
+      for(const cell of boardEl.children){
+        const r = parseInt(cell.dataset.r,10), c = parseInt(cell.dataset.c,10);
+        cell.innerHTML = '';
+        if(grid[r][c]){
+          cell.classList.add('occupied');
+          const b = document.createElement('div'); b.className='block'; b.style.width='100%'; b.style.height='100%'; b.style.borderRadius='6px'; b.style.background=grid[r][c];
+          cell.appendChild(b);
+        } else {
+          cell.classList.remove('occupied');
+        }
+      }
+    }
+
+    // clear full rows and columns, return number of lines cleared
+    function clearLines(){
+      const fullRows = [];
+      const fullCols = [];
+      for(let r=0;r<ROWS;r++){
+        if(grid[r].every(v=>v)) fullRows.push(r);
+      }
+      for(let c=0;c<COLS;c++){
+        let ok=true;
+        for(let r=0;r<ROWS;r++) if(!grid[r][c]){ok=false;break}
+        if(ok) fullCols.push(c);
+      }
+      const allCells = [];
+      for(const r of fullRows) for(let c=0;c<COLS;c++) allCells.push([r,c]);
+      for(const c of fullCols) for(let r=0;r<ROWS;r++) {
+        // avoid double pushing if intersection already included
+        if(!fullRows.includes(r)) allCells.push([r,c]);
+      }
+      // remove them
+      for(const [r,c] of allCells){
+        grid[r][c] = 0;
+      }
+      renderGrid();
+      // mark them visually for animation
+      markBreaking(allCells);
+      return allCells.length>0 ? (fullRows.length + fullCols.length) : 0;
+    }
+
+    function markBreaking(cells){
+      // find corresponding cell elements and animate
+      for(const [r,c] of cells){
+        const el = document.querySelector(`[data-r='${r}'][data-c='${c}']`);
+        if(!el) continue;
+        const dot = document.createElement('div'); dot.className='block breaking'; dot.style.width='100%'; dot.style.height='100%'; dot.style.borderRadius='6px'; dot.style.background='#fff';
+        el.appendChild(dot);
+        setTimeout(()=>{ if(dot && dot.parentNode) dot.remove(); },350);
+      }
+    }
+
+    function animateClears(){
+      // little celebratory scale on board
+      boardEl.animate([{transform:'scale(1)'},{transform:'scale(1.02)'},{transform:'scale(1)'}],{duration:300});
+    }
+
+    function calculatePoints(lines, streakVal){
+      // base points per cell cleared
+      const base = 10;
+      const cells = lines * COLS; // approximate (for multiple columns adjust in future)
+      const bonus = Math.floor(streakVal * 0.5 * cells);
+      const points = cells * base + bonus;
+      return points;
+    }
+
+    function updateScore(){
+      scoreEl.textContent = score;
+      streakEl.textContent = streak;
+      if(score>highscore){
+        highscore = score; localStorage.setItem('blokkies_highscore', String(highscore));
+        highEl.textContent = highscore;
+      }
+    }
+
+    function checkGameOver(){
+      // game over if none of the available pieces can be placed anywhere
+      for(const p of pieces){
+        for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++) if(canPlace(p,r,c)) return false;
+      }
+      // game over -> show simple reset and record
+      setTimeout(()=>{
+        alert('Game over! Final score: ' + score);
+        newGame();
+      },50);
+      return true;
+    }
+
+    // Undo support
+    undoBtn.addEventListener('click',()=>{
+      const prev = history.pop();
+      if(!prev) return;
+      grid = prev.grid.map(row=>row.slice());
+      pieces = prev.pieces.map(p=>JSON.parse(JSON.stringify(p)));
+      score = prev.score; streak = prev.streak;
+      renderGrid(); renderPieces(); updateScore();
+    });
+
+    newBtn.addEventListener('click', newGame);
+
+    function newGame(){
+      makeGrid(); newPieces(); score = 0; streak = 0; history = [];
+      renderGrid(); renderPieces(); updateScore();
+    }
+
+    // ---------------- Sound: simple WebAudio beeps ----------------
+    const audioCtx = (typeof AudioContext !== 'undefined') ? new AudioContext() : null;
+    function playTone(freq, time=0.06, type='sine', gain=0.12){
+      if(!audioCtx) return;
+      const o = audioCtx.createOscillator(); const g = audioCtx.createGain();
+      o.type = type; o.frequency.value = freq;
+      g.gain.value = gain;
+      o.connect(g); g.connect(audioCtx.destination);
+      o.start(); o.stop(audioCtx.currentTime + time);
+    }
+    function playPlaceSound(){ playTone(520,0.05,'sine',0.06); }
+    function playDeniedSound(){ playTone(220,0.12,'sawtooth',0.06); }
+    function playBreakSound(lines){
+      // layered tones depending on lines cleared
+      playTone(880,0.08,'sine',0.08);
+      setTimeout(()=>playTone(660,0.12,'sine',0.06),40);
+    }
+
+    // Initialise
+    newGame();
+  })();
+  </script>
+</body>
+</html>
